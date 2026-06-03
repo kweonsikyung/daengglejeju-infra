@@ -1,10 +1,11 @@
 # daengglejeju-infra
 
-> Terraform IaC for DaenggleJeju — single-command provisioning of the full AWS stack.
+> Terraform IaC for DaenggleJeju — single-command provisioning of the full AWS stack, plus ArgoCD GitOps manifests.
 
 ![Terraform](https://img.shields.io/badge/Terraform-1.x-7B42BC?logo=terraform)
 ![AWS](https://img.shields.io/badge/AWS-ap--northeast--2-FF9900?logo=amazonaws)
 ![k3s](https://img.shields.io/badge/k3s-single--node-FFC61C?logo=k3s)
+![ArgoCD](https://img.shields.io/badge/ArgoCD-v2.14-EF7B4D?logo=argo)
 
 ---
 
@@ -19,10 +20,17 @@ graph LR
   subgraph VPC["VPC  ap-northeast-2"]
     EIP --> EC2["EC2 t3.small\nk3s"]
     EC2 --- SG["Security Group\n80 · 443 · 22"]
+    subgraph k3s["k3s"]
+      Traefik["Traefik Ingress"]
+      App["Next.js Pod"]
+      ArgoCD["ArgoCD"]
+    end
   end
 
   TF["terraform apply"] -->|remote backend + state lock| S3["S3\ntfstate"]
   TF --> VPC
+  GH["GitHub\nDaenggleJeju:main"] -->|watches infra/k8s/| ArgoCD
+  ArgoCD -->|sync| App
 ```
 
 ---
@@ -38,6 +46,7 @@ graph LR
 | State | S3 Remote Backend + native state locking |
 | Container runtime | k3s (lightweight Kubernetes) |
 | Ingress | Traefik Ingress Controller |
+| GitOps | ArgoCD |
 
 ---
 
@@ -132,9 +141,38 @@ terraform force-unlock <LOCK_ID>
 
 ---
 
+## ArgoCD
+
+ArgoCD manifests live in `argocd/`.
+
+| File | Description |
+|---|---|
+| `application.yaml` | ArgoCD Application — watches `DaenggleJeju:main` `infra/k8s/`, automated sync + selfHeal + prune |
+| `ingress.yaml` | Traefik Ingress for ArgoCD UI (`argocd.daengglejeju.cloud`) |
+| `install.sh` | One-time bootstrap script — installs ArgoCD and registers the Application |
+
+### Bootstrap (run once on the k3s node)
+
+```bash
+bash argocd/install.sh
+```
+
+This creates the `argocd` namespace, installs ArgoCD, patches the server to run without its own TLS (Traefik handles it), and applies the Ingress + Application manifests.
+
+### Deployment flow
+
+```
+develop push
+  → GitHub Actions: build image + push to GHCR + update infra/k8s/deployment.yaml image tag
+  → PR: develop → main
+  → merge
+  → ArgoCD detects manifest diff → auto-sync to k3s
+```
+
+---
+
 ## What's Not Here
 
-This repo provisions infrastructure only. Application deployment is handled separately:
+Application source code and CI workflows live in [`DaenggleJeju`](https://github.com/kweonsikyung/DaenggleJeju).
 
-- **CI/CD**: GitHub Actions (build) + ArgoCD (GitOps deploy) → [`DaenggleJeju`](https://github.com/kweonsikyung/DaenggleJeju)
-- **Monitoring**: Prometheus + Grafana stack deployed as k3s workloads
+- **Monitoring**: Prometheus + Grafana stack (planned)
